@@ -1,0 +1,24 @@
+
+# Python environment
+.venv/
+__pycache__/
+*.py[cod]
+
+# Jupyter
+.ipynb_checkpoints/
+
+# Local data
+data/raw/*
+data/processed/*
+!data/raw/.gitkeep
+!data/processed/.gitkeep
+
+# Trained models
+models/*
+
+# Secrets and local settings
+.env
+.kaggle/
+
+# Mac files
+.DS_Store
