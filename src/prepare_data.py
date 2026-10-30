@@ -400,4 +400,4 @@ print(f"Random seed: {RANDOM_STATE}")
 
 print("\nRaw dataset has not been modified.")
 print("BMI imputation is handled later within model pipelines.")
-print("No processed files have been written yet.")
+print("Processed training, development and test files have been saved.")
