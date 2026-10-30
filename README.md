@@ -7,10 +7,11 @@
    The dataset contains 5,110 records and 12 columns, including demographic characteristics, health indicators, lifestyle information and the binary stroke target. The dataset has some missing BMI values and a pretty big class imbalance as only 4.9% of the results had a stroke.
 
 3. Repository Structure
-  ## 3. Repository Structure
+
 
 The project is organised into the following directories and files:
 
+```text
 stroke-prediction/
 │
 ├── data/
@@ -30,6 +31,7 @@ stroke-prediction/
 ├── .gitignore
 ├── README.md
 └── requirements.txt
+```
 
 data/raw/: Original dataset downloaded from Kaggle.
 
