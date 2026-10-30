@@ -5,63 +5,71 @@ import pandas as pd
 
 from sklearn.compose import ColumnTransformer
 from sklearn.impute import SimpleImputer
-from sklearn.linear_model import LogisticRegression
 from sklearn.metrics import (
     average_precision_score,
     classification_report,
     confusion_matrix,
+    f1_score,
+    precision_score,
+    recall_score,
     roc_auc_score,
 )
-from sklearn.model_selection import train_test_split
 from sklearn.pipeline import Pipeline
 from sklearn.preprocessing import OneHotEncoder, StandardScaler
+from sklearn.linear_model import LogisticRegression
+
+from imblearn.over_sampling import SMOTENC
+from imblearn.pipeline import Pipeline as ImbPipeline
 
 
-# --------------------------------------------------
-# 1. Configuration
-# --------------------------------------------------
+# ============================================================
+# 1. PATHS AND DATA
+# ============================================================
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 
-DATA_PATH = (
-    PROJECT_ROOT
-    / "data"
-    / "raw"
-    / "healthcare-dataset-stroke-data.csv"
-)
+PROCESSED_PATH = PROJECT_ROOT / "data" / "processed"
 
-RANDOM_STATE = 28
-TEST_SIZE = 0.15
-DEV_SIZE = 0.15
+TRAIN_PATH = PROCESSED_PATH / "train.csv"
+DEV_PATH = PROCESSED_PATH / "development.csv"
+TEST_PATH = PROCESSED_PATH / "test.csv"
+
+REPORT_PATH = PROJECT_ROOT / "reports" / "development_predictions_smotenc.csv"
+
+# Check that the processed datasets exist
+for path in [TRAIN_PATH, DEV_PATH, TEST_PATH]:
+    if not path.exists():
+        raise FileNotFoundError(
+            f"Could not find {path}. "
+            "Run python src/prepare_data.py first."
+        )
+
+# Load the saved datasets
+train_df = pd.read_csv(TRAIN_PATH)
+dev_df = pd.read_csv(DEV_PATH)
+test_df = pd.read_csv(TEST_PATH)
+
+# Separate features and target
+X_train = train_df.drop(columns=["stroke"])
+y_train = train_df["stroke"].astype(int)
+
+X_dev = dev_df.drop(columns=["stroke"])
+y_dev = dev_df["stroke"].astype(int)
+
+X_test = test_df.drop(columns=["stroke"])
+y_test = test_df["stroke"].astype(int)
+
+print("Processed datasets loaded successfully.")
 
 
-# --------------------------------------------------
-# 2. Load and clean data
-# --------------------------------------------------
-
-df = pd.read_csv(DATA_PATH)
-
-# Exclude the single record with gender = Other
-other_count = (df["gender"] == "Other").sum()
-df = df[df["gender"] != "Other"].copy()
-
-print("--- DATA ---")
-print(f"Original rows: {len(df) + other_count}")
-print(f"Records excluded (gender = Other): {other_count}")
-print(f"Rows used: {len(df)}")
-print(f"Stroke cases: {df['stroke'].sum()}")
-
-
-# --------------------------------------------------
-# 3. Separate predictors and target
-# --------------------------------------------------
-
-# ID is an identifier and is excluded from the model.
-X = df.drop(columns=["id", "stroke"])
-y = df["stroke"]
+# ============================================================
+# 2. FEATURE TYPES
+# ============================================================
 
 categorical_features = [
     "gender",
+    "hypertension",
+    "heart_disease",
     "ever_married",
     "work_type",
     "Residence_type",
@@ -70,154 +78,230 @@ categorical_features = [
 
 numerical_features = [
     "age",
-    "hypertension",
-    "heart_disease",
     "avg_glucose_level",
     "bmi",
 ]
 
 
-# --------------------------------------------------
-# 4. Split into train, development and test sets
-# --------------------------------------------------
+# ============================================================
+# 3. IMPUTATION
+# ============================================================
 
-X_temp, X_test, y_temp, y_test = train_test_split(
-    X,
-    y,
-    test_size=TEST_SIZE,
-    random_state=RANDOM_STATE,
-    stratify=y,
+# Fit imputers using training data only
+numeric_imputer = SimpleImputer(strategy="median")
+categorical_imputer = SimpleImputer(strategy="most_frequent")
+
+X_train[numerical_features] = numeric_imputer.fit_transform(
+    X_train[numerical_features]
 )
 
-dev_fraction = DEV_SIZE / (1 - TEST_SIZE)
-
-X_train, X_dev, y_train, y_dev = train_test_split(
-    X_temp,
-    y_temp,
-    test_size=dev_fraction,
-    random_state=RANDOM_STATE,
-    stratify=y_temp,
+X_dev[numerical_features] = numeric_imputer.transform(
+    X_dev[numerical_features]
 )
 
-print("\n--- DATA SPLITS ---")
-for name, X_part, y_part in [
-    ("Train", X_train, y_train),
-    ("Development", X_dev, y_dev),
-    ("Test", X_test, y_test),
-]:
-    print(
-        f"{name}: {len(X_part)} records, "
-        f"{int(y_part.sum())} stroke cases, "
-        f"{y_part.mean() * 100:.2f}% prevalence"
-    )
-
-
-# --------------------------------------------------
-# 5. Preprocessing pipeline
-# --------------------------------------------------
-
-numeric_pipeline = Pipeline(
-    steps=[
-        ("imputer", SimpleImputer(strategy="median")),
-        ("scaler", StandardScaler()),
-    ]
+X_test[numerical_features] = numeric_imputer.transform(
+    X_test[numerical_features]
 )
 
-categorical_pipeline = Pipeline(
-    steps=[
-        ("imputer", SimpleImputer(strategy="most_frequent")),
+X_train[categorical_features] = categorical_imputer.fit_transform(
+    X_train[categorical_features].astype(str)
+)
+
+X_dev[categorical_features] = categorical_imputer.transform(
+    X_dev[categorical_features].astype(str)
+)
+
+X_test[categorical_features] = categorical_imputer.transform(
+    X_test[categorical_features].astype(str)
+)
+
+
+# ============================================================
+# 4. SMOTENC RESAMPLING
+# ============================================================
+
+# Identify categorical feature positions
+categorical_indices = [
+    X_train.columns.get_loc(column)
+    for column in categorical_features
+]
+
+smote = SMOTENC(
+    categorical_features=categorical_indices,
+    random_state=28,
+)
+
+X_train_resampled, y_train_resampled = smote.fit_resample(
+    X_train,
+    y_train,
+)
+
+
+# ============================================================
+# 5. PREPROCESSING AND MODEL
+# ============================================================
+
+preprocessor = ColumnTransformer(
+    transformers=[
         (
-            "encoder",
+            "num",
+            StandardScaler(),
+            numerical_features,
+        ),
+        (
+            "cat",
             OneHotEncoder(
                 handle_unknown="ignore",
                 drop="first",
             ),
+            categorical_features,
         ),
     ]
 )
 
-preprocessor = ColumnTransformer(
-    transformers=[
-        ("numeric", numeric_pipeline, numerical_features),
-        ("categorical", categorical_pipeline, categorical_features),
-    ]
+model = LogisticRegression(
+    max_iter=2000,
+    random_state=28,
 )
 
-
-# --------------------------------------------------
-# 6. Create and train baseline model
-# --------------------------------------------------
-
-model = Pipeline(
+pipeline = ImbPipeline(
     steps=[
         ("preprocessor", preprocessor),
-        (
-            "classifier",
-            LogisticRegression(
-                max_iter=2000,
-                random_state=RANDOM_STATE,
-            ),
-        ),
+        ("model", model),
     ]
 )
 
-# Only the training set is used to fit preprocessing
-# and the logistic regression model.
-model.fit(X_train, y_train)
 
-print("\n--- MODEL TRAINED ---")
-print("Model: Logistic Regression")
-print("BMI imputation: training-set median")
-print("Categorical variables: one-hot encoded")
+# ============================================================
+# 6. TRAIN MODEL
+# ============================================================
 
-
-# --------------------------------------------------
-# 7. Evaluate on development set
-# --------------------------------------------------
-
-# Use predicted probabilities for ranking metrics.
-dev_probabilities = model.predict_proba(X_dev)[:, 1]
-
-# Default classification threshold is 0.5.
-dev_predictions = (dev_probabilities >= 0.5).astype(int)
-
-print("\n--- DEVELOPMENT RESULTS ---")
-print(
-    "ROC-AUC:",
-    round(roc_auc_score(y_dev, dev_probabilities), 4),
-)
-print(
-    "PR-AUC (average precision):",
-    round(average_precision_score(y_dev, dev_probabilities), 4),
+pipeline.fit(
+    X_train_resampled,
+    y_train_resampled,
 )
 
-print("\nClassification report:")
+
+# ============================================================
+# 7. DEVELOPMENT SET EVALUATION
+# ============================================================
+
+dev_probabilities = pipeline.predict_proba(X_dev)[:, 1]
+
+roc_auc = roc_auc_score(y_dev, dev_probabilities)
+average_precision = average_precision_score(
+    y_dev,
+    dev_probabilities,
+)
+
+print("\n--- DEVELOPMENT SET PERFORMANCE ---")
+print(f"ROC-AUC: {roc_auc:.4f}")
+print(f"Average Precision: {average_precision:.4f}")
+
+
+# Evaluate different classification thresholds
+thresholds = [0.50, 0.30, 0.20, 0.10, 0.05]
+
+print("\n--- THRESHOLD COMPARISON ---")
+
+for threshold in thresholds:
+    predictions = (
+        dev_probabilities >= threshold
+    ).astype(int)
+
+    precision = precision_score(
+        y_dev,
+        predictions,
+        zero_division=0,
+    )
+
+    recall = recall_score(
+        y_dev,
+        predictions,
+        zero_division=0,
+    )
+
+    f1 = f1_score(
+        y_dev,
+        predictions,
+        zero_division=0,
+    )
+
+    print(f"\nThreshold: {threshold:.2f}")
+    print(f"Predicted positive cases: {predictions.sum()}")
+    print(f"Precision: {precision:.3f}")
+    print(f"Recall: {recall:.3f}")
+    print(f"F1-score: {f1:.3f}")
+
+
+# Detailed report at threshold 0.50
+default_predictions = (
+    dev_probabilities >= 0.50
+).astype(int)
+
+print("\n--- CLASSIFICATION REPORT (THRESHOLD 0.50) ---")
 print(
     classification_report(
         y_dev,
-        dev_predictions,
+        default_predictions,
         zero_division=0,
     )
 )
 
-print("Confusion matrix:")
-print(confusion_matrix(y_dev, dev_predictions))
+print("\n--- CONFUSION MATRIX (THRESHOLD 0.50) ---")
+print(confusion_matrix(y_dev, default_predictions))
 
 
-# --------------------------------------------------
-# 8. Save development results
-# --------------------------------------------------
+# ============================================================
+# 8. SAVE DEVELOPMENT PREDICTIONS
+# ============================================================
 
-reports_dir = PROJECT_ROOT / "reports"
-reports_dir.mkdir(parents=True, exist_ok=True)
+results = pd.DataFrame({
+    "actual_stroke": y_dev.values,
+    "predicted_probability": dev_probabilities,
+    "predicted_stroke_0.50": default_predictions,
+})
 
-dev_results = X_dev.copy()
-dev_results["actual_stroke"] = y_dev
-dev_results["predicted_probability"] = dev_probabilities
-dev_results["predicted_stroke_at_0_5"] = dev_predictions
+REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
 
-results_path = reports_dir / "development_predictions.csv"
-dev_results.to_csv(results_path, index=False)
+results.to_csv(REPORT_PATH, index=False)
 
-print(f"\nDevelopment predictions saved to: {results_path}")
-print("\nThe test set has not been used for model evaluation.")
+print(f"\nDevelopment predictions saved to: {REPORT_PATH}")
+
+
+# ============================================================
+# 9. DATA AND RESAMPLING SUMMARY
+# ============================================================
+
+print("\n--- DATA SUMMARY ---")
+
+total_records = len(train_df) + len(dev_df) + len(test_df)
+total_strokes = int(y_train.sum() + y_dev.sum() + y_test.sum())
+
+print(f"Total records used: {total_records}")
+print(f"Total stroke cases: {total_strokes}")
+
+print("\n--- DATA SPLITS ---")
+
+for name, labels in [
+    ("Train", y_train),
+    ("Development", y_dev),
+    ("Test", y_test),
+]:
+    print(
+        f"{name}: {len(labels)} records | "
+        f"{int(labels.sum())} stroke cases | "
+        f"{labels.mean():.2%} prevalence"
+    )
+
+print("\n--- SMOTENC RESAMPLING ---")
+print(f"Training records before SMOTENC: {len(y_train)}")
+print(f"Training stroke cases before SMOTENC: {int(y_train.sum())}")
+print(f"Training records after SMOTENC: {len(y_train_resampled)}")
+print(
+    "Training stroke cases after SMOTENC: "
+    f"{int(y_train_resampled.sum())}"
+)
+
+print("\nTraining and development evaluation complete.")
+
