@@ -65,11 +65,11 @@ python -m pip install -r requirements.txt
 
 Ensure the downloaded dataset is in the expected location before running scripts that require it.
 
-5. Running The Project
+5. Running The Project:
    All commands should be executed from the project root with the virtual environment activated.
 
 
-6. Data Handling and Preparation
+7. Data Handling and Preparation
 
 The original dataset is validated before modelling.
 
